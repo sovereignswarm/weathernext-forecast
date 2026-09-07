@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeatherNext — AI Weather Forecast</title>
+<meta name="description" content="15-day AI weather forecasts powered by Google DeepMind WeatherNext 2, served via Open-Meteo.">
+<style>
+:root{--bg:#0b1220;--card:#131c2e;--card2:#1a2540;--text:#e6edf7;--muted:#8fa3c0;--accent:#4f8cff;--accent2:#7c5cff;--good:#34d399;--warn:#fbbf24;--bad:#f87171}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 20px 60px}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:8px 0 20px}
+h1{font-size:26px;font-weight:700;letter-spacing:-.5px}
+h1 span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--muted);font-size:13px;margin-top:4px}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type=text]{background:var(--card);border:1px solid #2a3a5c;color:var(--text);padding:10px 14px;border-radius:8px;font-size:14px;width:220px}
+input[type=text]:focus{outline:none;border-color:var(--accent)}
+button{background:var(--accent);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .15s}
+button:hover{opacity:.85}
+button.secondary{background:var(--card2);border:1px solid #2a3a5c}
+.status{color:var(--muted);font-size:13px;min-height:20px;margin-bottom:16px}
+.status.error{color:var(--bad)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.day{background:var(--card);border:1px solid #223252;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:6px}
+.day.today{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.day .date{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.day .hi{font-size:22px;font-weight:700}
+.day .lo{font-size:14px;color:var(--muted)}
+.day .cond{font-size:12px;color:var(--muted);margin-top:auto}
+.day .precip{font-size:12px;color:var(--accent)}
+.day .wind{font-size:12px;color:var(--muted)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-top:20px}
+.legend b{color:var(--text)}
+.footer{color:var(--muted);font-size:12px;margin-top:28px;line-height:1.6}
+.footer a{color:var(--accent)}
+.loading{display:flex;align-items:center;gap:10px;color:var(--muted)}
+.spinner{width:16px;height:16px;border:2px solid #2a3a5c;border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Weather<span>Next</span></h1>
+      <div class="sub">15-day AI forecast · Google DeepMind WeatherNext 2 via Open-Meteo</div>
+    </div>
+    <div class="controls">
+      <input type="text" id="loc" placeholder="City or lat,lng" value="Moraine, OH">
+      <button id="go">Forecast</button>
+      <button class="secondary" id="use-gps">Use my location</button>
+    </div>
+  </header>
+  <div class="status" id="status"></div>
+  <div class="grid" id="grid"></div>
+  <div class="legend" id="legend"></div>
+  <div class="footer">
+    Forecast data: <a href="https://open-meteo.com/en/docs/google-weathernext-api" target="_blank" rel="noopener">Open-Meteo Google WeatherNext API</a> (Google DeepMind WeatherNext 2 ensemble). Model code: <a href="https://github.com/google-deepmind/weathernext" target="_blank" rel="noopener">google-deepmind/weathernext</a>. This site is a lightweight client for the model's public forecast feed — it does not run the model itself.
+  </div>
+</div>
+<script>
+const WMO = {
+  0:['Clear sky','☀️'],1:['Mainly clear','🌤️'],2:['Partly cloudy','⛅'],3:['Overcast','☁️'],
+  45:['Fog','🌫️'],48:['Depositing rime fog','🌫️'],
+  51:['Light drizzle','🌦️'],53:['Drizzle','🌦️'],55:['Dense drizzle','🌧️'],
+  56:['Freezing drizzle','🌧️'],57:['Dense freezing drizzle','🌧️'],
+  61:['Light rain','🌧️'],63:['Rain','🌧️'],65:['Heavy rain','🌧️'],
+  66:['Freezing rain','🌧️'],67:['Heavy freezing rain','🌧️'],
+  71:['Light snow','🌨️'],73:['Snow','🌨️'],75:['Heavy snow','❄️'],77:['Snow grains','❄️'],
+  80:['Light showers','🌦️'],81:['Showers','🌧️'],82:['Violent showers','⛈️'],
+  85:['Snow showers','🌨️'],86:['Heavy snow showers','❄️'],
+  95:['Thunderstorm','⛈️'],96:['Thunderstorm w/ hail','⛈️'],99:['Thunderstorm w/ heavy hail','⛈️']
+};
+const cond = c => WMO[c] || ['Unknown','❓'];
+const fmt = (v,u) => v==null?'—':Math.round(v)+u;
+const $ = s => document.querySelector(s);
+let abort = null;
+
+async function geocode(q){
+  if(/^-?\d+(\.\d+)?,-?\d+(\.\d+)?$/.test(q.trim())){
+    const [lat,lng]=q.split(',').map(Number); return {lat,lng,name:q.trim()};
+  }
+  const r=await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=1&language=en&format=json`);
+  const d=await r.json();
+  if(!d.results||!d.results.length) throw new Error('Location not found');
+  const res=d.results[0];
+  return {lat:res.latitude,lng:res.longitude,name:res.name+(res.admin1?', '+res.admin1:'')};
+}
+
+async function load(lat,lng,name){
+  if(abort) abort.abort();
+  abort=new AbortController();
+  const url=`https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${lat}&longitude=${lng}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max&timezone=auto&models=google_weathernext2_ensemble&forecast_days=15`;
+  const r=await fetch(url,{signal:abort.signal});
+  if(!r.ok) throw new Error('Forecast request failed ('+r.status+')');
+  const d=await r.json();
+  render(d,name);
+}
+
+function render(d,name){
+  const grid=$('#grid'); grid.innerHTML='';
+  const days=d.daily.time.map((t,i)=>({
+    date:t, code:d.daily.weather_code[i],
+    hi:d.daily.temperature_2m_max[i], lo:d.daily.temperature_2m_min[i],
+    precip:d.daily.precipitation_probability_max?.[i], wind:d.daily.wind_speed_10m_max?.[i]
+  }));
+  const today=new Date().toISOString().slice(0,10);
+  days.forEach((day,i)=>{
+    const [label,emoji]=cond(day.code);
+    const el=document.createElement('div');
+    el.className='day'+(day.date===today?' today':'');
+    const d=new Date(day.date+'T00:00:00');
+    const dateStr=d.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+    el.innerHTML=`
+      <div class="date">${dateStr}</div>
+      <div class="hi">${fmt(day.hi,'°')} <span class="lo">${fmt(day.lo,'°')}</span></div>
+      <div class="cond">${emoji} ${label}</div>
+      ${day.precip!=null?`<div class="precip">💧 ${Math.round(day.precip)}%</div>`:''}
+      ${day.wind!=null?`<div class="wind">💨 ${Math.round(day.wind)} km/h</div>`:''}
+    `;
+    grid.appendChild(el);
+  });
+  $('#legend').innerHTML=`<span><b>${name}</b></span><span>High / Low</span><span>Precip probability</span><span>Max wind</span>`;
+  $('#status').textContent=`${name} · ${days.length}-day WeatherNext 2 forecast · updated ${new Date().toLocaleTimeString()}`;
+}
+
+$('#go').addEventListener('click',async()=>{
+  const q=$('#loc').value.trim(); if(!q) return;
+  $('#status').innerHTML='<span class="loading"><span class="spinner"></span> Resolving location…</span>';
+  try{
+    const loc=await geocode(q);
+    $('#status').innerHTML='<span class="loading"><span class="spinner"></span> Fetching WeatherNext 2 forecast…</span>';
+    await load(loc.lat,loc.lng,loc.name);
+  }catch(e){ $('#status').className='status error'; $('#status').textContent='Error: '+e.message; }
+});
+$('#use-gps').addEventListener('click',()=>{
+  if(!navigator.geolocation){ $('#status').textContent='Geolocation not supported'; return; }
+  $('#status').innerHTML='<span class="loading"><span class="spinner"></span> Getting location…</span>';
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    try{ await load(pos.coords.latitude,pos.coords.longitude,'Your location'); }
+    catch(e){ $('#status').className='status error'; $('#status').textContent='Error: '+e.message; }
+  },()=>{ $('#status').textContent='Location denied'; });
+});
+$('#loc').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#go').click(); });
+
+// Initial load
+(async()=>{
+  $('#status').innerHTML='<span class="loading"><span class="spinner"></span> Loading…</span>';
+  try{ const loc=await geocode('Moraine, OH'); await load(loc.lat,loc.lng,loc.name); }
+  catch(e){ $('#status').className='status error'; $('#status').textContent='Error: '+e.message; }
+})();
+</script>
+</body>
+</html>
